@@ -37,5 +37,9 @@
  bool ExecutionContext::isCallStackEmpty() const {
     return call_stack_.empty();
  }
- /*
+void ExecutionContext::clear() {
+    port_values_.clear();
+    call_stack_.clear(); // Clear stack on context reset
+ }
+
  } // namespace bdi::runtime

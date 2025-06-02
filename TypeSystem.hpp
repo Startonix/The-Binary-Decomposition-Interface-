@@ -2,6 +2,7 @@
  #ifndef BDI_CORE_TYPES_TYPESYSTEM_HPP
  #define BDI_CORE_TYPES_TYPESYSTEM_HPP
  #include "BDITypes.hpp"
+ #include <numeric> // For std::common_type 
  namespace bdi::core::types {
  class TypeSystem {
  public:
@@ -13,6 +14,7 @@
         return type1 == type2;
     }
     // Check if an implicit conversion is allowed
+    // Check if an implicit conversion is generally considered safe/standard
     static bool canImplicitlyConvert(BDIType from_type, BDIType to_type) {
         if (from_type == to_type) return true;
         // Example: Widening integer conversions

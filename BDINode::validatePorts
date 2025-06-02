@@ -1,0 +1,52 @@
+// Implementation of BDINode::validatePorts
+ bool BDINode::validatePorts(const BDIGraph& graph) const {
+    // Validate Data Inputs
+    for (size_t i = 0; i < data_inputs.size(); ++i) {
+        const PortRef& input_ref = data_inputs[i];
+        // Check if source node exists
+        auto source_node_opt = graph.getNode(input_ref.node_id);
+        if (!source_node_opt) {
+            // Error: Source node for data input does not exist
+            return false;
+        }
+        const BDINode& source_node = source_node_opt.value();
+        // Check if source node has the specified output port
+        if (input_ref.port_index >= source_node.data_outputs.size()) {
+            // Error: Source node output port index out of bounds
+            return false;
+        }
+        // Check type compatibility (optional but recommended)
+        BDIType source_output_type = source_node.getOutputType(input_ref.port_index);
+        BDIType expected_input_type = this->getExpectedInputType(static_cast<PortIndex>(i));
+        // Allow UNKNOWN type for flexibility during construction, but real type checking is needed
+        if (expected_input_type != types::BDIType::UNKNOWN && source_output_type != types::BDIType::UNKNOWN) {
+            if (!types::TypeSystem::areCompatible(source_output_type, expected_input_type)) {
+                 // Check for implicit conversion possibilities
+                 if (!types::TypeSystem::canImplicitlyConvert(source_output_type, expected_input_type)) {
+                    // Error: Type mismatch between connected ports
+                    return false;
+                 }
+            }
+        }
+    }
+    // Validate Control Inputs
+    for (const NodeID& control_input_id : control_inputs) {
+        if (!graph.getNode(control_input_id)) {
+            // Error: Control input node does not exist
+            return false;
+        }
+        // Optionally check if the source node actually lists this node in its control_outputs
+    }
+    // Validate Control Outputs
+    for (const NodeID& control_output_id : control_outputs) {
+        if (!graph.getNode(control_output_id)) {
+            // Error: Control output node does not exist
+            return false;
+        }
+         // Optionally check if the target node actually lists this node in its control_inputs
+    }
+    // TODO: Add more validation specific to the operation type?
+    // (e.g., correct number of inputs/outputs for ARITH_ADD)
+    return true; // Passed all checks
+ }
+ } // namespace bdi::core::graph

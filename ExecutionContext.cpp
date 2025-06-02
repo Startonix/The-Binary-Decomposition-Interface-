@@ -22,7 +22,6 @@
     // call_stack_.clear();
  }
  // --- Call Stack Methods (Stubs) --
-/*
  void ExecutionContext::pushCall(NodeID return_node_id) {
     call_stack_.push_back(return_node_id);
  }

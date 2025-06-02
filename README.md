@@ -1,6 +1,5 @@
 # The Binary Decomposition Interface
 
- Introducing BDI: Rethinking Computation from Binary Up – A Universal Substrate for Verifiable Intelligence
  We live in an age of unprecedented computational complexity. From massive AI models and intricate scientific simulations to heterogeneous hardware
  juggling CPUs, GPUs, and custom accelerators, the systems we build are pushing the limits of our traditional software stacks. Yet, beneath the surface, a
  fundamental disconnect persists. High-level logic, mathematical reasoning, and developer intent often get lost in translation through layers of abstract

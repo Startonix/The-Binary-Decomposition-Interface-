@@ -1,0 +1,18 @@
+// File: bdi/core/types/TypeSystem.cpp
+ // (Currently, all methods in TypeSystem.hpp are static inline or basic checks,
+ // so a separate .cpp might not be strictly necessary unless more complex,
+ // non-template logic or state (like a dynamic type registry) is added later.)
+ // For now, we assume no separate .cpp is needed for TypeSystem.
+
+ // File: bdi/core/payload/TypedPayload.cpp
+ // (Similar to TypeSystem, the current TypedPayload.hpp relies heavily on templates
+ // and basic struct definitions. The complex part is the C++ type to BDIType mapping
+ // within createFrom<T>, which is often best kept in the header for templates.
+ // If non-template helpers were needed, they'd go here.)
+ // For now, we assume no separate .cpp is needed for TypedPayload.
+
+ // File: bdi/core/graph/BDINode.cpp
+ #include "BDINode.hpp"
+ #include "BDIGraph.hpp" // Include BDIGraph for validation context
+ #include "../types/TypeSystem.hpp" // For type compatibility checks
+ namespace bdi::core::graph {

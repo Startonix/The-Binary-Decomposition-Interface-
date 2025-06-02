@@ -29,16 +29,16 @@
     std::optional<TypedPayload> getPortValue(const PortRef& port) const;
     std::optional<TypedPayload> getPortValue(NodeID node_id, PortIndex port_idx) const;
     // --- Call Stack (Basic Implementation) --
-    // void pushCall(NodeID return_node_id);
-    // std::optional<NodeID> popCall();
-    // bool isCallStackEmpty() const;
-    // Clear context (e.g., for starting a new execution)
+    void pushCall(NodeID return_node_id); // Node ID where execution should resume after RETURN
+    std::optional<NodeID> popCall();
+    bool isCallStackEmpty() const;
+    // Could add methods to inspect stack without popping
     void clear();
  private:
     // Stores the output values of executed nodes' ports
     std::unordered_map<PortRef, TypedPayload, PortRefHash> port_values_;
     // Basic call stack for function calls/returns
-    // std::vector<NodeID> call_stack_;
+    std::vector<NodeID> call_stack_;
     // Note: Full call stack implementation requires handling arguments, local variables etc.
     // Deferring full implementation for now.
  };

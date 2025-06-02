@@ -8,7 +8,7 @@
  BDI emerges from a specific philosophical standpoint we call Machine Epistemology. This view posits that for knowledge (mathematical, logical, or
  learned) to be truly verifiable and utilizable by a computational system (be it human, AI, or otherwise), it must ultimately be traceable to executable
  operations on a fundamental binary substrate.
- Why binary? As explored previously:
+ Why binary? 
  It's the minimal distinguishable state (0 ≠ 1) required for information processing.
  It has direct physical realizability in transistors and logic gates.
  It possesses proven computational universality (Boolean logic, Turing completeness).

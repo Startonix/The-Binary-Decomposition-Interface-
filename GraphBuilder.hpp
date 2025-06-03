@@ -4,8 +4,10 @@
  #include "../../core/graph/BDIGraph.hpp"
  #include "../../core/graph/BDINode.hpp"
  #include "../../core/types/BDITypes.hpp"
+ #include "../../meta/MetadataStore.hpp" // Include MetadataStore
  #include <memory>
  #include <string>
+ #include <any> // For optional metadata variant
  namespace bdi::frontend::api {
  using bdi::core::graph::BDIGraph;
  using bdi::core::graph::BDINode;
@@ -15,12 +17,15 @@
  using bdi::core::graph::BDIOperationType;
  using bdi::core::types::BDIType;
  using bdi::core::payload::TypedPayload;
+ using namespace bdi::meta;
  // Provides a convenient API for programmatically constructing BDI graphs.
  class GraphBuilder {
  public:
-    GraphBuilder(const std::string& graph_name = "built_graph");
+    // Constructor now takes MetadataStore reference
+    GraphBuilder(MetadataStore& metadata_store, const std::string& graph_name = "built_graph");
     // Create a new node
-    NodeID addNode(BDIOperationType op, const std::string& debug_name = ""); // Name might go in metadata
+    // Add node, optionally providing initial metadata
+    NodeID addNode(BDIOperationType op, const std::string& debug_name = "", std::optional<MetadataVariant> initial_metadata = std::nullopt);
     // Set immediate payload for a node
     bool setNodePayload(NodeID node_id, TypedPayload payload);
     // Define an output port for a node
@@ -37,6 +42,7 @@
     BDIGraph& getGraph();
     const BDIGraph& getGraph() const;
 private:
+    MetadataStore& metadata_store_; // Reference to external store
     std::unique_ptr<BDIGraph> graph_;
     // Helper to get mutable node pointer
     BDINode* getNodeMutable(NodeID node_id);

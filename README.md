@@ -102,20 +102,6 @@ Proof-Carrying Code: Embed formal verification directly into the executable arti
  Composable & Verifiable AI: Build complex agents by composing BDI subgraphs (representing different DSLs or skills), where each step and
  learning update is potentially verifiable via the ledger.
  
- BDI and the Emergence of Intelligence
- Crucially, BDI provides the architectural plumbing necessary for the Composable Intelligent Systems envisioned previously. While traditional systems
- simulate intelligence using high-level code running on opaque runtimes, BDI allows the core dynamics of adaptation and reasoning to be represented and
- executed at the substrate level:
- Learning isn't just changing weights in a high-level library; it's a verifiable BDI graph transformation triggered by feedback, modifying node payloads
- via the MetaLearningEngine.
- Recurrence isn't hidden in a library's state; it's managed explicitly by the RecurrenceManager interacting with designated nodes and the
- ExecutionContext.
- Reasoning isn't just symbolic manipulation; it can involve executing logic DSLs mapped to BDI, potentially verified against embedded ProofTags.
- BDI aims to make the mechanisms of intelligence inspectable, verifiable, and directly executable.
- The Vision: A Unified Language from Thought to Silicon
- BDI proposes a fundamental shift: moving away from layers of lossy text-based translations towards a unified, semantic, binary graph representation that
- spans the entire computational stack.
- 
  It's an environment where:
  Logic is Instruction: Mathematical and logical constructs map directly to verifiable graph patterns with execution semantics.
  Memory is Topology: Memory isn't just a flat address space but a structured collection of typed regions influencing execution.

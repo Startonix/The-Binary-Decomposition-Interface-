@@ -3,6 +3,7 @@
  #define BDI_RUNTIME_EXECUTIONCONTEXT_HPP
  #include "../core/graph/BDINode.hpp"       // For PortRef, NodeID
  #include "../core/payload/TypedPayload.hpp" // For TypedPayload
+ #include "BDIValueVariant.hpp" // Use the new variant type
  #include <unordered_map>
  #include <optional>
  #include <vector> // For call stack
@@ -22,25 +23,27 @@
  class ExecutionContext {
  public:
     ExecutionContext() = default;
-  // Store the output value for a specific port
-    void setPortValue(const PortRef& port, TypedPayload value);
-    void setPortValue(NodeID node_id, PortIndex port_idx, TypedPayload value);
-    // Retrieve the value for a specific port
-    std::optional<TypedPayload> getPortValue(const PortRef& port) const;
-    std::optional<TypedPayload> getPortValue(NodeID node_id, PortIndex port_idx) const;
-    // --- Call Stack (Basic Implementation) --
-    void pushCall(NodeID return_node_id); // Node ID where execution should resume after RETURN
+ // Store the output value for a specific port
+    void setPortValue(const PortRef& port, BDIValueVariant value); // Takes variant
+    void setPortValue(NodeID node_id, PortIndex port_idx, BDIValueVariant value);
+    // Retrieve the value variant for a specific port
+    std::optional<BDIValueVariant> getPortValue(const PortRef& port) const; // Returns variant
+    std::optional<BDIValueVariant> getPortValue(NodeID node_id, PortIndex port_idx) const;
+    // --- Conversion --
+    // Convert from TypedPayload (binary) to BDIValueVariant (runtime value)
+    // Returns std::monostate in variant on error
+    static BDIValueVariant payloadToVariant(const TypedPayload& payload);
+    // Convert from BDIValueVariant (runtime value) back to TypedPayload (binary)
+    // Returns TypedPayload with UNKNOWN type on error
+    static TypedPayload variantToPayload(const BDIValueVariant& value);
+    // --- Call Stack --
+    void pushCall(NodeID return_node_id);
     std::optional<NodeID> popCall();
     bool isCallStackEmpty() const;
-    // Could add methods to inspect stack without popping
     void clear();
  private:
-    // Stores the output values of executed nodes' ports
-    std::unordered_map<PortRef, TypedPayload, PortRefHash> port_values_;
-    // Basic call stack for function calls/returns
+    std::unordered_map<PortRef, BDIValueVariant, PortRefHash> port_values_; // Stores variants
     std::vector<NodeID> call_stack_;
-    // Note: Full call stack implementation requires handling arguments, local variables etc.
-    // Deferring full implementation for now.
  };
  } // namespace bdi::runtime
  #endif // BDI_RUNTIME_EXECUTIONCONTEXT_HPP

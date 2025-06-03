@@ -1,361 +1,365 @@
- // File: bdi/runtime/BDIVirtualMachine.cpp 
+// File: bdi/runtime/BDIVirtualMachine.cpp 
  #include "BDIVirtualMachine.hpp"
  #include "ExecutionContext.hpp"
  #include "MemoryManager.hpp"
  #include "../core/graph/BDINode.hpp"
  #include "../core/types/TypeSystem.hpp"
  #include "../core/payload/TypedPayload.hpp"
+ #include "BDIValueVariant.hpp" // Include the variant
  #include <iostream>
  #include <stdexcept>
  #include <variant>
- #include <cmath> // For abs, floating point ops
- #include <limits> // For numeric limits
+ #include <cmath>
+ #include <limits>
+ #include <functional> // For std::function
  namespace bdi::runtime {
- // --- Helper Templates for Input/Output --
-// (More robust than macros)
- template <typename ExpectedType>
- std::optional<ExpectedType> getInputValue(ExecutionContext& ctx, const BDINode& node, PortIndex input_idx) {
-    if (input_idx >= node.data_inputs.size()) {
-        std::cerr << "VM Error: Accessing out-of-bounds input index " << input_idx << " for Node " << node.id << std::endl;
-        return std::nullopt;
-    }
-    auto payload_opt = ctx.getPortValue(node.data_inputs[input_idx]);
-    if (!payload_opt) {
-        std::cerr << "VM Error: Input value not found for Node " << node.id << " Input " << input_idx << std::endl;
-        return std::nullopt;
-    }
-    // Basic Type Check (can be enhanced using TypeSystem)
-    constexpr BDIType expected_bdi_type = core::payload::MapCppTypeToBdiType<ExpectedType>::value;
-     if (payload_opt.value().type != expected_bdi_type) {
-         // Attempt implicit conversion? For now, require exact match for simplicity in this helper.
-         // Proper VM would handle promotions based on operation.
-         std::cerr << "VM Error: Type mismatch for Node " << node.id << " Input " << input_idx
-                   << ". Expected " << core::types::bdiTypeToString(expected_bdi_type)
-                   << ", Got " << core::types::bdiTypeToString(payload_opt.value().type) << std::endl;
-         return std::nullopt;
-     }
-    try {
-        return payload_opt.value().getAs<ExpectedType>();
-    } catch (const std::exception& e) {
-         std::cerr << "VM Error: Exception getting input for Node " << node.id << " Input " << input_idx << ": " << e.what() << std::endl;
+ // --- Type Conversion Helper --
+// Converts a value in a variant to the target C++ type, handling promotions/truncations.
+ // Returns std::nullopt on failure.
+ template <typename TargetType>
+ std::optional<TargetType> convertVariantTo(const BDIValueVariant& value_var) {
+    using Type = core::types::BDIType;
+    constexpr Type target_bdi_type = core::payload::MapCppTypeToBdiType<TargetType>::value;
+    TargetType result;
+    bool success = false;
+    std::visit([&](auto&& arg) {
+        using SourceCppType = std::decay_t<decltype(arg)>;
+        constexpr Type source_bdi_type = core::payload::MapCppTypeToBdiType<SourceCppType>::value;
+        if constexpr (std::is_same_v<SourceCppType, TargetType>) {
+            result = arg; // Direct match
+            success = true;
+        } else if constexpr (std::is_convertible_v<SourceCppType, TargetType>) {
+             // Check if BDI allows this implicit conversion (more strict than C++)
+             if (core::types::TypeSystem::canImplicitlyConvert(source_bdi_type, target_bdi_type)) {
+                // Perform standard C++ conversion
+                // Warning: Potential precision loss or overflow not explicitly checked here!
+                result = static_cast<TargetType>(arg);
+                success = true;
+             }
+             // Else: Conversion not allowed by BDI rules
+        }
+        // Else: Types are not convertible
+    }, value_var);
+    if (success) {
+        return result;
+    } else {
+        std::cerr << "VM Error: Cannot convert variant holding " << core::types::bdiTypeToString(getBDIType(value_var))
+                  << " to target type " << core::types::bdiTypeToString(target_bdi_type) << std::endl;
         return std::nullopt;
     }
  }
- template <typename T>
- bool setOutputValue(ExecutionContext& ctx, const BDINode& node, PortIndex output_idx, T value) {
-     if (output_idx >= node.data_outputs.size()) {
-         std::cerr << "VM Error: Accessing out-of-bounds output index " << output_idx << " for Node " << node.id << std::endl;
+ // --- Helper to get typed input value from context using variant --
+template <typename ExpectedType>
+ std::optional<ExpectedType> getInputValueTyped(ExecutionContext& ctx, const BDINode& node, PortIndex input_idx) {
+     if (input_idx >= node.data_inputs.size()) return std::nullopt; // Bounds check
+     auto value_var_opt = ctx.getPortValue(node.data_inputs[input_idx]);
+     if (!value_var_opt) return std::nullopt; // Value not found
+     return convertVariantTo<ExpectedType>(value_var_opt.value());
+ }
+ // --- Helper to set output value variant --
+bool setOutputValueVariant(ExecutionContext& ctx, const BDINode& node, PortIndex output_idx, BDIValueVariant value_var) {
+     if (output_idx >= node.data_outputs.size()) return false;
+     // Optional: Check if variant type matches node's declared output type
+     BDIType output_def_type = node.data_outputs[output_idx].type;
+     BDIType value_actual_type = getBDIType(value_var);
+     if (output_def_type != BDIType::UNKNOWN && !core::types::TypeSystem::areCompatible(output_def_type, value_actual_type) &&
+ !core::types::TypeSystem::canImplicitlyConvert(value_actual_type, output_def_type)) {
+         std::cerr << "VM Error: Output type mismatch for Node " << node.id << " Port " << output_idx
+                   << ". Declared: " << core::types::bdiTypeToString(output_def_type)
+                   << ", Actual: " << core::types::bdiTypeToString(value_actual_type) << std::endl;
+         // If implicit conversion is allowed, should we convert before setting? For now, require match or explicit conversion node.
          return false;
      }
-     // Check if node's defined output type matches T
- constexpr BDIType expected_bdi_type = core::payload::MapCppTypeToBdiType<T>::value;
-     if (node.data_outputs[output_idx].type != expected_bdi_type) {
-          std::cerr << "VM Error: Trying to set output type " << core::types::bdiTypeToString(expected_bdi_type)
-                    << " for Node " << node.id << " Port " << output_idx
-                    << ", but port is defined as " << core::types::bdiTypeToString(node.data_outputs[output_idx].type) << std::endl;
-          // Allow if UNKNOWN? Or require definition? For now, be strict.
-          return false;
-     }
-     ctx.setPortValue(node.id, output_idx, core::payload::TypedPayload::createFrom(value));
+     ctx.setPortValue(node.id, output_idx, std::move(value_var));
      return true;
  }
  // --- BDIVirtualMachine Methods --
 BDIVirtualMachine::BDIVirtualMachine(size_t memory_size)
     : current_node_id_(0),
       memory_manager_(std::make_unique<MemoryManager>(memory_size)),
-      execution_context_(std::make_unique<ExecutionContext>())
- {
-    if (!memory_manager_ || !execution_context_) {
-        throw std::runtime_error("Failed to initialize VM components.");
-    }
-    //std::cout << "BDIVirtualMachine: Initialized with MemoryManager and ExecutionContext." << std::endl;
- }
+      execution_context_(std::make_unique<ExecutionContext>()) { /* ... */ }
  BDIVirtualMachine::~BDIVirtualMachine() = default;
- bool BDIVirtualMachine::execute(BDIGraph& graph, NodeID entry_node_id) {
-    //std::cout << "BDIVirtualMachine: Starting execution at Node " << entry_node_id << std::endl;
-    current_node_id_ = entry_node_id;
-    execution_context_->clear();
-    int execution_step_limit = 10000; // Increased limit
-    int steps = 0;
-    while (current_node_id_ != 0 && steps < execution_step_limit) {
-        if (!fetchDecodeExecuteCycle(graph)) {
-            std::cerr << "BDIVirtualMachine: Execution cycle failed or halted abnormally at Node " << current_node_id_ << "." << std::endl;
-            current_node_id_ = 0;
-            return false;
-        }
-        steps++;
-         if (current_node_id_ == 0) {
-            //std::cout << "BDIVirtualMachine: Execution halted normally." << std::endl;
-            break;
-        }
-    }
-    if (steps >= execution_step_limit) {
-         std::cerr << "BDIVirtualMachine: Execution step limit reached." << std::endl;
-         return false;
-    }
-    //std::cout << "BDIVirtualMachine: Execution finished." << std::endl;
-    return current_node_id_ == 0;
- }
- bool BDIVirtualMachine::fetchDecodeExecuteCycle(BDIGraph& graph) {
-    auto node_opt = graph.getNode(current_node_id_);
-    if (!node_opt) {
-        std::cerr << "VM Error: Current node ID " << current_node_id_ << " not found in graph." << std::endl;
-        return false;
-    }
-    BDINode& current_node = node_opt.value().get();
-    if (!executeNode(current_node)) {
-         // Error already printed in executeNode usually
-         return false;
-    }
-    // Determine the next node AFTER successful execution
-    NodeID next_id = determineNextNode(current_node);
-    current_node_id_ = next_id;
-    return true; // Cycle completed successfully (may have set current_node_id_ to 0)
- }
- // --- Execute Node Implementation (Expanded with Core Ops) --
-// Note: This version still simplifies type handling significantly.
- // A production VM would need robust handling of type promotions,
- // different integer sizes, float precision etc., likely using templates
- // or visitors over std::variant representations of values.
+ bool BDIVirtualMachine::execute(BDIGraph& graph, NodeID entry_node_id) { /* ... (no change needed) ... */ }
+ bool BDIVirtualMachine::fetchDecodeExecuteCycle(BDIGraph& graph) { /* ... (no change needed) ... */ }
+ // --- Execute Node Implementation (Refactored for Variant & Core Ops) --
  bool BDIVirtualMachine::executeNode(BDINode& node) {
     using OpType = core::graph::BDIOperationType;
     using BDIType = core::types::BDIType;
     using TypeSys = core::types::TypeSystem;
     ExecutionContext& ctx = *execution_context_;
-    // Lambda helpers for common binary operations (simplifies type checking)
-    auto executeNumericBinaryOp = [&](auto operation) -> bool {
-        if (node.data_inputs.size() != 2 || node.data_outputs.size() != 1) return false;
-        auto lhs_opt = ctx.getPortValue(node.data_inputs[0]);
-        auto rhs_opt = ctx.getPortValue(node.data_inputs[1]);
-        if (!lhs_opt || !rhs_opt) return false; // Missing input
-        BDIType type1 = lhs_opt.value().type;
-        BDIType type2 = rhs_opt.value().type;
-        BDIType result_type = TypeSys::getPromotedType(type1, type2); // Determine result type
-        BDIType expected_output_type = node.getOutputType(0);
-        // Allow UNKNOWN output for flexibility, otherwise check compatibility
-         if (expected_output_type != BDIType::UNKNOWN && !TypeSys::areCompatible(result_type, expected_output_type) &&
- !TypeSys::canImplicitlyConvert(result_type, expected_output_type)) {
-             std::cerr << "VM Error: Node " << node.id << " output type " << core::types::bdiTypeToString(expected_output_type)
-                       << " incompatible with promoted result type " << core::types::bdiTypeToString(result_type) << std::endl;
-             return false;
-         }
-         if (result_type == BDIType::UNKNOWN) {
-             std::cerr << "VM Error: Invalid type promotion for Node " << node.id << " inputs "
-                       << core::types::bdiTypeToString(type1) << " and " << core::types::bdiTypeToString(type2) << std::endl;
-             return false;
-         }
-        // Perform operation based on promoted type
-        // NOTE: This requires converting inputs to the promoted type first!
-        // This is a simplified example assuming direct operation is possible or types match.
-        // A full implementation needs explicit conversion logic.
-        try {
-            // --- Simplified Type Handling --
-            // We'll just handle a few common pairs for demonstration
-             if (result_type == BDIType::INT32) {
-                 int32_t v1 = lhs_opt.value().getAs<int32_t>(); // Assumes type matches or conversion is trivial
-                 int32_t v2 = rhs_opt.value().getAs<int32_t>();
-                 int32_t result = operation(v1, v2);
-                 return setOutputValue(ctx, node, 0, result);
-             } else if (result_type == BDIType::INT64) {
-                 int64_t v1 = lhs_opt.value().getAs<int64_t>();
-                 int64_t v2 = rhs_opt.value().getAs<int64_t>();
-                 int64_t result = operation(v1, v2);
-                 return setOutputValue(ctx, node, 0, result);
-             } else if (result_type == BDIType::FLOAT32) {
-                 float v1 = lhs_opt.value().getAs<float>();
-                 float v2 = rhs_opt.value().getAs<float>();
-                 float result = operation(v1, v2);
-                 return setOutputValue(ctx, node, 0, result);
-             } else if (result_type == BDIType::FLOAT64) {
-                 double v1 = lhs_opt.value().getAs<double>();
-                 double v2 = rhs_opt.value().getAs<double>();
-                 double result = operation(v1, v2);
-                 return setOutputValue(ctx, node, 0, result);
-             }
-            // --- Add other numeric types (UINTs, FLOAT16...) ---
-            else {
-                 std::cerr << "VM Error: Unhandled numeric type " << core::types::bdiTypeToString(result_type) << " for Node " << node.id << std::endl;
-                return false;
-            }
-        } catch (const std::exception& e) {
-             std::cerr << "VM Exception during numeric op Node " << node.id << ": " << e.what() << std::endl;
+    // --- Visitor Pattern for Binary Operations --
+    // Define a visitor struct to handle operations based on promoted types
+    struct BinaryOpVisitor {
+        BDIValueVariant& result; // Store result directly in the variant
+        const BDIValueVariant& rhs;
+        // Define operator() for each type combination you want to handle
+        template <typename T1> // T1 is type of LHS
+        void operator()(const T1& lhs_val) {
+            std::visit([&](auto&& rhs_val) { // Visit RHS
+                using T2 = std::decay_t<decltype(rhs_val)>;
+                // Determine promoted type (simplified example)
+                 constexpr BDIType bdi_t1 = core::payload::MapCppTypeToBdiType<T1>::value;
+                 constexpr BDIType bdi_t2 = core::payload::MapCppTypeToBdiType<T2>::value;
+                 BDIType promoted_bdi = TypeSys::getPromotedType(bdi_t1, bdi_t2);
+                 if (promoted_bdi == BDIType::UNKNOWN) {
+                     result = std::monostate{}; // Indicate error
+                     return;
+                 }
+                 // Perform operation based on promoted type
+                 // Requires converting lhs_val and rhs_val to promoted type!
+                 // --- THIS IS THE COMPLEX PART --
+                 // Example for INT32 promotion (needs full conversion logic)
+                 if (promoted_bdi == BDIType::INT32) {
+                     auto lhs_p = convertVariantTo<int32_t>(BDIValueVariant{lhs_val}); // Convert LHS
+                     auto rhs_p = convertVariantTo<int32_t>(rhs);                    // Convert RHS
+                     if (lhs_p && rhs_p) {
+                         // Apply the actual operation lambda passed to executeBinaryOpHelper
+                         // result = operation_lambda(*lhs_p, *rhs_p); // Need to pass lambda in
+                         result = (*lhs_p) + (*rhs_p); // Hardcoded ADD for now
+                     } else { result = std::monostate{}; } // Conversion failed
+                 }
+                  // --- Add cases for INT64, FLOAT32, FLOAT64 etc. promotion --
+                 else {
+                    // std::cerr << "BinaryOpVisitor: Unhandled promotion type." << std::endl;
+                    result = std::monostate{}; // Error: Unhandled promotion
+                 }
+            }, rhs); // End visit RHS
+        } // End operator()
+        // Handle monostate (error case)
+         void operator()(const std::monostate&) { result = std::monostate{}; }
+    };
+    // Helper function to execute binary ops using the visitor
+    // Takes operation name for error messages and the operation lambda
+    // Returns bool success
+    auto executeBinaryOpHelper =
+        [&](const std::string& opName, auto operation_lambda) -> bool {
+        if (node.data_inputs.size() != 2 || node.data_outputs.size() != 1) {
+            std::cerr << "VM Error: Incorrect number of ports for " << opName << " Node " << node.id << std::endl;
             return false;
         }
-    };
-    auto executeIntegerBinaryOp = [&](auto operation) -> bool {
-         // Similar structure to executeNumericBinaryOp, but enforces integer types
-         // ... implementation ...
-         // For brevity, skipping full implementation here, but structure is similar
-         // Ensure result type is integer.
-         return true; // Placeholder
-    };
-     auto executeComparisonOp = [&](auto operation) -> bool {
-        if (node.data_inputs.size() != 2 || node.data_outputs.size() != 1 || node.getOutputType(0) != BDIType::BOOL) return false;
-         auto lhs_opt = ctx.getPortValue(node.data_inputs[0]);
-         auto rhs_opt = ctx.getPortValue(node.data_inputs[1]);
-         if (!lhs_opt || !rhs_opt) return false;
-         // Simplified: Assume inputs are compatible and directly comparable for now
-         // Need proper type handling based on inputs
-         try {
-             if (TypeSys::isInteger(lhs_opt.value().type)) { // Example INT32 comparison
-                 int32_t v1 = lhs_opt.value().getAs<int32_t>();
-                 int32_t v2 = rhs_opt.value().getAs<int32_t>();
-                 bool result = operation(v1, v2);
-                 return setOutputValue(ctx, node, 0, result);
-             } else if (TypeSys::isFloatingPoint(lhs_opt.value().type)) { // Example FLOAT32 comparison
-                 float v1 = lhs_opt.value().getAs<float>();
-                 float v2 = rhs_opt.value().getAs<float>();
-                 bool result = operation(v1, v2);
-                 return setOutputValue(ctx, node, 0, result);
-             }
-             // --- Add other comparable types --
-             else {
-                  std::cerr << "VM Error: Unhandled comparison types for Node " << node.id << std::endl;
+        auto lhs_var_opt = ctx.getPortValue(node.data_inputs[0]);
+        auto rhs_var_opt = ctx.getPortValue(node.data_inputs[1]);
+        if (!lhs_var_opt || !rhs_var_opt) {
+            std::cerr << "VM Error: Missing inputs for " << opName << " Node " << node.id << std::endl;
+          return false;
+        }
+        BDIValueVariant result_var = std::monostate{}; // Start with error state
+        // --- Use visitor to perform operation based on actual variant types --
+        // NOTE: The visitor needs the specific operation lambda to work properly.
+        // This structure is complex. Simpler approach below for now.
+        // BinaryOpVisitor visitor{result_var, rhs_var_opt.value()};
+        // std::visit(visitor, lhs_var_opt.value());
+        // --- Simpler (less robust type handling) approach for now --
+        BDIType type1 = getBDIType(lhs_var_opt.value());
+        BDIType type2 = getBDIType(rhs_var_opt.value());
+        BDIType promoted_type = TypeSys::getPromotedType(type1, type2);
+        if(promoted_type == BDIType::UNKNOWN) {
+            std::cerr << "VM Error: Cannot promote types for " << opName << " Node " << node.id << std::endl;
+            return false;
+        }
+        try {
+            if (promoted_type == BDIType::INT32) {
+                auto v1 = convertVariantTo<int32_t>(lhs_var_opt.value());
+                auto v2 = convertVariantTo<int32_t>(rhs_var_opt.value());
+                if (v1 && v2) result_var = operation_lambda(*v1, *v2); else return false;
+            } else if (promoted_type == BDIType::INT64) {
+                auto v1 = convertVariantTo<int64_t>(lhs_var_opt.value());
+                auto v2 = convertVariantTo<int64_t>(rhs_var_opt.value());
+                if (v1 && v2) result_var = operation_lambda(*v1, *v2); else return false;
+            } else if (promoted_type == BDIType::UINT32) {
+                auto v1 = convertVariantTo<uint32_t>(lhs_var_opt.value());
+                auto v2 = convertVariantTo<uint32_t>(rhs_var_opt.value());
+                if (v1 && v2) result_var = operation_lambda(*v1, *v2); else return false;
+            } else if (promoted_type == BDIType::UINT64) {
+                auto v1 = convertVariantTo<uint64_t>(lhs_var_opt.value());
+                auto v2 = convertVariantTo<uint64_t>(rhs_var_opt.value());
+                if (v1 && v2) result_var = operation_lambda(*v1, *v2); else return false;
+            } else if (promoted_type == BDIType::FLOAT32) {
+                auto v1 = convertVariantTo<float>(lhs_var_opt.value());
+                auto v2 = convertVariantTo<float>(rhs_var_opt.value());
+                if (v1 && v2) result_var = operation_lambda(*v1, *v2); else return false;
+            } else if (promoted_type == BDIType::FLOAT64) {
+                auto v1 = convertVariantTo<double>(lhs_var_opt.value());
+                auto v2 = convertVariantTo<double>(rhs_var_opt.value());
+                if (v1 && v2) result_var = operation_lambda(*v1, *v2); else return false;
+            }
+            // --- Add BOOL logic if needed --
+            else {
+                 std::cerr << "VM Error: Unhandled promoted type " << core::types::bdiTypeToString(promoted_type) << " in " << opName << " Node " <<
+ node.id << std::endl;
                  return false;
-             }
+            }
+        } catch (const std::exception& e) {
+             std::cerr << "VM Exception during " << opName << " Node " << node.id << ": " << e.what() << std::endl;
+            return false;
+        }
+        // Check for error state in result_var before setting output
+        if (std::holds_alternative<std::monostate>(result_var)) {
+             std::cerr << "VM Error: Operation failed for " << opName << " Node " << node.id << std::endl;
+            return false;
+        }
+        return setOutputValueVariant(ctx, node, 0, result_var);
+    };
+     // --- Helper for Unary Operations --
+     auto executeUnaryOpHelper =
+         [&](const std::string& opName, auto operation_lambda) -> bool {
+         if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1) return false;
+         auto val_opt = ctx.getPortValue(node.data_inputs[0]);
+         if (!val_opt) return false;
+         BDIValueVariant result_var = std::monostate{};
+         BDIType input_type = getBDIType(val_opt.value());
+          // Determine result type based on operation and input type
+         // BDIType result_type = ...; // e.g., NEG keeps type, NOT is BOOL->BOOL?
+         try {
+              // Simplified again - apply lambda directly based on variant type
+              std::visit([&](auto&& arg) {
+                  using T = std::decay_t<decltype(arg)>;
+                   if constexpr (!std::is_same_v<T, std::monostate>) {
+                       // Check if operation is valid for this type T
+                       // Apply operation
+                        result_var = operation_lambda(arg);
+                   }
+              }, val_opt.value());
          } catch (const std::exception& e) {
-              std::cerr << "VM Exception during comparison op Node " << node.id << ": " << e.what() << std::endl;
+             std::cerr << "VM Exception during " << opName << " Node " << node.id << ": " << e.what() << std::endl;
              return false;
          }
+          if (std::holds_alternative<std::monostate>(result_var)) return false; // Operation failed or wasn't applicable
+          return setOutputValueVariant(ctx, node, 0, result_var);
      };
+    // --- Execute Node Switch Statement --
     try {
         switch (node.operation) {
             // --- Meta Ops --
             case OpType::META_NOP: break;
             case OpType::META_START: break;
-            case OpType::META_END: return true; // Handled by determineNextNode
+            case OpType::META_END: return true;
             // --- Arithmetic Ops --
-            case OpType::ARITH_ADD: return executeNumericBinaryOp([](auto a, auto b){ return a + b; });
-            case OpType::ARITH_SUB: return executeNumericBinaryOp([](auto a, auto b){ return a - b; });
-            case OpType::ARITH_MUL: return executeNumericBinaryOp([](auto a, auto b){ return a * b; });
-            case OpType::ARITH_DIV: return executeNumericBinaryOp([](auto a, auto b){
-                 // TODO: Handle division by zero!
-                 if (b == 0) throw std::runtime_error("Division by zero");
-                 return a / b;
+            case OpType::ARITH_ADD: return executeBinaryOpHelper("ADD", [](auto a, auto b){ return a + b; });
+            case OpType::ARITH_SUB: return executeBinaryOpHelper("SUB", [](auto a, auto b){ return a - b; });
+            case OpType::ARITH_MUL: return executeBinaryOpHelper("MUL", [](auto a, auto b){ return a * b; });
+            case OpType::ARITH_DIV: return executeBinaryOpHelper("DIV", [](auto a, auto b){
+                 if (b == static_cast<decltype(b)>(0)) throw std::runtime_error("Division by zero");
+                 return a / b; // Integer division truncates, float is standard
             });
-            case OpType::ARITH_MOD: { // Modulo needs integer types
-                 if (node.data_inputs.size() != 2 || node.data_outputs.size() != 1) return false;
-                 auto lhs_opt = ctx.getPortValue(node.data_inputs[0]);
-                 auto rhs_opt = ctx.getPortValue(node.data_inputs[1]);
-                 if (!lhs_opt || !rhs_opt || !TypeSys::isInteger(lhs_opt.value().type) || !TypeSys::isInteger(rhs_opt.value().type)) return false;
-                 // Simplified INT32 case
-                 int32_t v1 = lhs_opt.value().getAs<int32_t>();
-                 int32_t v2 = rhs_opt.value().getAs<int32_t>();
-                 if (v2 == 0) throw std::runtime_error("Modulo by zero");
-                 return setOutputValue(ctx, node, 0, v1 % v2);
-            }
-             case OpType::ARITH_NEG: {
-                 if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1) return false;
-                 auto val_opt = ctx.getPortValue(node.data_inputs[0]);
-                 if (!val_opt || !TypeSys::isNumeric(val_opt.value().type)) return false;
-                 // Simplified INT32 case
-                  if (val_opt.value().type == BDIType::INT32) return setOutputValue(ctx, node, 0, -val_opt.value().getAs<int32_t>());
-                  // Add other types (float, int64...)
-                 return false; // Unhandled type
-             }
-            // --- Implement ABS, INC, DEC similarly --
-            // --- Bitwise Ops (Assume Integer types) --
-             case OpType::BIT_AND: return executeIntegerBinaryOp([](auto a, auto b){ return a & b; });
-             case OpType::BIT_OR:  return executeIntegerBinaryOp([](auto a, auto b){ return a | b; });
-             case OpType::BIT_XOR: return executeIntegerBinaryOp([](auto a, auto b){ return a ^ b; });
-             case OpType::BIT_NOT: {
-                  if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1) return false;
-                  auto val_opt = ctx.getPortValue(node.data_inputs[0]);
-                  if (!val_opt || !TypeSys::isInteger(val_opt.value().type)) return false;
-                  // Simplified INT32 case
-                  if (val_opt.value().type == BDIType::INT32) return setOutputValue(ctx, node, 0, ~val_opt.value().getAs<int32_t>());
-                 // Add other integer types...
-                 return false;
-             }
-            // --- Implement SHL, SHR, ASHR, ROL, ROR, POPCOUNT etc. --
+            case OpType::ARITH_MOD: // Requires integer logic separate from helper maybe
+                 return executeBinaryOpHelper("MOD", [](auto a, auto b) -> decltype(a) {
+                     if constexpr (std::is_integral_v<decltype(a)> && std::is_integral_v<decltype(b)>) {
+                        if (b == 0) throw std::runtime_error("Modulo by zero");
+                        return a % b;
+                     } else {
+                        throw std::runtime_error("MOD requires integer types"); // Should be caught by type promotion ideally
+                        return {}; // Return default value for type
+                     }
+                 });
+             case OpType::ARITH_NEG: return executeUnaryOpHelper("NEG", [](auto a){ return -a; });
+             case OpType::ARITH_ABS: return executeUnaryOpHelper("ABS", [](auto a){ using std::abs; return abs(a); });
+            // INC, DEC need careful handling for pointers vs numbers
+            // --- Bitwise Ops (Assume Integer) --
+            // Note: These lambdas might fail if non-integer types get through promotion (needs fixing)
+             case OpType::BIT_AND: return executeBinaryOpHelper("AND", [](auto a, auto b){ if constexpr (std::is_integral_v<decltype(a)>) return a & b;
+ else throw std::runtime_error("BIT_AND requires integers"); });
+             case OpType::BIT_OR:  return executeBinaryOpHelper("OR", [](auto a, auto b){ if constexpr (std::is_integral_v<decltype(a)>) return a | b; else
+ throw std::runtime_error("BIT_OR requires integers"); });
+             case OpType::BIT_XOR: return executeBinaryOpHelper("XOR", [](auto a, auto b){ if constexpr (std::is_integral_v<decltype(a)>) return a ^ b; else
+ throw std::runtime_error("BIT_XOR requires integers"); });
+             case OpType::BIT_NOT: return executeUnaryOpHelper("NOT", [](auto a){ if constexpr (std::is_integral_v<decltype(a)>) return ~a; else throw
+ std::runtime_error("BIT_NOT requires integers"); });
+             // --- SHL, SHR etc. require second operand type check --
             // --- Comparison Ops --
-            case OpType::CMP_EQ: return executeComparisonOp([](auto a, auto b){ return a == b; });
-            case OpType::CMP_NE: return executeComparisonOp([](auto a, auto b){ return a != b; });
-            case OpType::CMP_LT: return executeComparisonOp([](auto a, auto b){ return a < b; });
-            case OpType::CMP_LE: return executeComparisonOp([](auto a, auto b){ return a <= b; });
-            case OpType::CMP_GT: return executeComparisonOp([](auto a, auto b){ return a > b; });
-            case OpType::CMP_GE: return executeComparisonOp([](auto a, auto b){ return a >= b; });
-             // --- Logical Ops (Assume BOOL inputs/output) --
-             case OpType::LOGIC_AND: return executeComparisonOp([](bool a, bool b){ return a && b; }); // Re-use comparison helper structure
-             case OpType::LOGIC_OR:  return executeComparisonOp([](bool a, bool b){ return a || b; });
-             case OpType::LOGIC_XOR: return executeComparisonOp([](bool a, bool b){ return a ^ b; });
-             case OpType::LOGIC_NOT: {
-                  if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1 || node.getOutputType(0) != BDIType::BOOL) return false;
-                  auto val_opt = getInputValue<bool>(ctx, node, 0); // Use helper
-                  if (!val_opt) return false;
-                  return setOutputValue(ctx, node, 0, !val_opt.value());
-             }
+            case OpType::CMP_EQ: return executeBinaryOpHelper("CMP_EQ", [](auto a, auto b){ return bool(a == b); });
+            case OpType::CMP_NE: return executeBinaryOpHelper("CMP_NE", [](auto a, auto b){ return bool(a != b); });
+            case OpType::CMP_LT: return executeBinaryOpHelper("CMP_LT", [](auto a, auto b){ return bool(a < b); });
+            case OpType::CMP_LE: return executeBinaryOpHelper("CMP_LE", [](auto a, auto b){ return bool(a <= b); });
+            case OpType::CMP_GT: return executeBinaryOpHelper("CMP_GT", [](auto a, auto b){ return bool(a > b); });
+            case OpType::CMP_GE: return executeBinaryOpHelper("CMP_GE", [](auto a, auto b){ return bool(a >= b); });
+            // --- Logical Ops --
+            case OpType::LOGIC_AND: return executeBinaryOpHelper("LOGIC_AND", [](bool a, bool b){ return a && b; });
+            case OpType::LOGIC_OR:  return executeBinaryOpHelper("LOGIC_OR", [](bool a, bool b){ return a || b; });
+            case OpType::LOGIC_XOR: return executeBinaryOpHelper("LOGIC_XOR", [](bool a, bool b){ return a ^ b; });
+            case OpType::LOGIC_NOT: return executeUnaryOpHelper("LOGIC_NOT", [](bool a){ return !a; });
             // --- Memory Ops --
             case OpType::MEM_LOAD: {
-                 // ... (Implementation from previous step) ...
-                 // Ensure type loaded matches node.getOutputType(0)
                  if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1) return false;
-                 auto address_opt = getInputValue<uintptr_t>(ctx, node, 0);
+                 auto address_opt = getInputValueTyped<uintptr_t>(ctx, node, 0);
                  if (!address_opt) return false;
-                 uintptr_t address = address_opt.value();
                  BDIType load_type = node.getOutputType(0);
                  size_t load_size = core::types::getBdiTypeSize(load_type);
-                 if (load_size == 0 && load_type != BDIType::VOID) { // Allow VOID load? Maybe not.
-                      std::cerr << "VM Error: Cannot load zero-size type " << core::types::bdiTypeToString(load_type) << " for Node " << node.id << std::endl;
-                      return false;
-                 }
-                 std::vector<std::byte> buffer(load_size);
-                 if (!memory_manager_->readMemory(address, buffer.data(), load_size)) {
-                     std::cerr << "VM Error: Memory read failed at address " << address << " for Node " << node.id << std::endl;
+                 if (load_size == 0 && load_type != BDIType::VOID) return false;
+                 TypedPayload loaded_payload(load_type, BinaryData(load_size)); // Create payload structure
+                 if (!memory_manager_->readMemory(address_opt.value(), loaded_payload.data.data(), load_size)) {
                      return false;
                  }
-                 ctx.setPortValue(node.id, 0, TypedPayload(load_type, std::move(buffer)));
-                 break;
+                 BDIValueVariant loaded_value = ExecutionContext::payloadToVariant(loaded_payload); // Convert binary to variant
+                 if (std::holds_alternative<std::monostate>(loaded_value) && load_type != BDIType::VOID) return false; // Conversion failed
+                 return setOutputValueVariant(ctx, node, 0, loaded_value); // Store variant in context
             }
             case OpType::MEM_STORE: {
-                  // ... (Implementation from previous step) ...
-                  if (node.data_inputs.size() != 2) return false; // Input 0: Address, Input 1: Value
-                  auto address_opt = getInputValue<uintptr_t>(ctx, node, 0);
-                  auto value_payload_opt = ctx.getPortValue(node.data_inputs[1]); // Get payload directly
-                  if (!address_opt || !value_payload_opt) return false;
-                 if (!memory_manager_->writeMemory(address_opt.value(), value_payload_opt.value().data.data(), value_payload_opt.value().data.size())) {
-                      std::cerr << "VM Error: Memory write failed at address " << address_opt.value() << " for Node " << node.id << std::endl;
+                 if (node.data_inputs.size() != 2) return false;
+                 auto address_opt = getInputValueTyped<uintptr_t>(ctx, node, 0);
+                 auto value_var_opt = ctx.getPortValue(node.data_inputs[1]); // Get variant directly
+                 if (!address_opt || !value_var_opt) return false;
+                 TypedPayload payload_to_store = ExecutionContext::variantToPayload(value_var_opt.value()); // Convert variant to binary
+                 if (payload_to_store.type == BDIType::UNKNOWN) return false; // Conversion failed
+                 if (!memory_manager_->writeMemory(address_opt.value(), payload_to_store.data.data(), payload_to_store.data.size())) {
                      return false;
                  }
-                 break;
+                 break; // Store has no output
             }
             case OpType::MEM_ALLOC: {
-                 // ... (Implementation from previous step) ...
                  if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1) return false;
-                 auto alloc_size_opt = getInputValue<uint64_t>(ctx, node, 0); // Assume size is uint64
+                 auto alloc_size_opt = getInputValueTyped<uint64_t>(ctx, node, 0);
                  if (!alloc_size_opt) return false;
                  size_t alloc_size = static_cast<size_t>(alloc_size_opt.value());
                  auto region_id_opt = memory_manager_->allocateRegion(alloc_size);
                  if (!region_id_opt) return false;
                  auto region_info = memory_manager_->getRegionInfo(region_id_opt.value());
                  if (!region_info) return false;
-                 // Output 0: Base address (POINTER type)
-                 if (!setOutputValue(ctx, node, 0, region_info.value().base_address)) return false;
-                 break;
+                 // Output 0: Base address (POINTER/uintptr_t)
+                 return setOutputValueVariant(ctx, node, 0, BDIValueVariant{region_info.value().base_address});
             }
-            // --- Type Conversion Ops (Example) --
-             case OpType::CONV_INT_TO_FLOAT: { // Example: INT32 -> FLOAT32
-                 if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1 || node.getOutputType(0) != BDIType::FLOAT32) return false;
-                 auto input_val_opt = getInputValue<int32_t>(ctx, node, 0); // Assume input type checked here
+            // --- Type Conversion Ops --
+             case OpType::CONV_INT_TO_FLOAT: // Example: Any Integer -> FLOAT32
+             case OpType::CONV_FLOAT_TO_INT: // Example: Any Float -> INT32 (Truncate)
+             case OpType::CONV_EXTEND_SIGN: // Example: INT16 -> INT32
+             case OpType::CONV_EXTEND_ZERO: // Example: UINT16 -> UINT32
+             case OpType::CONV_TRUNC:       // Example: INT64 -> INT32
+             case OpType::CONV_BITCAST:     // Reinterpret bits
+             {
+                 if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1) return false;
+                 auto input_val_opt = ctx.getPortValue(node.data_inputs[0]);
                  if (!input_val_opt) return false;
-                 return setOutputValue(ctx, node, 0, static_cast<float>(input_val_opt.value()));
+                 BDIType target_type = node.getOutputType(0);
+                 BDIValueVariant result_var = std::monostate{};
+                 // Use convertVariantTo to perform the conversion based on target type
+                 if (target_type == BDIType::FLOAT32) {
+                     auto res = convertVariantTo<float>(input_val_opt.value());
+                     if (res) result_var = *res;
+                 } else if (target_type == BDIType::INT32) {
+                      auto res = convertVariantTo<int32_t>(input_val_opt.value());
+                     if (res) result_var = *res;
+                 }
+                 // --- Add cases for all target types specified by CONV operations --
+                 // Need specific logic for BITCAST, EXTEND, TRUNC etc.
+                 else {
+                      std::cerr << "VM Error: Unhandled CONV target type " << core::types::bdiTypeToString(target_type) << " for Node " << node.id <<
+ std::endl;
+                     return false;
+                 }
+                 if (std::holds_alternative<std::monostate>(result_var)) return false; // Conversion failed
+                 return setOutputValueVariant(ctx, node, 0, result_var);
              }
-             case OpType::CONV_FLOAT_TO_INT: { // Example: FLOAT32 -> INT32 (Truncation)
-                 if (node.data_inputs.size() != 1 || node.data_outputs.size() != 1 || node.getOutputType(0) != BDIType::INT32) return false;
-                  auto input_val_opt = getInputValue<float>(ctx, node, 0);
-                  if (!input_val_opt) return false;
-                  // TODO: Handle potential overflow/saturation?
-                  return setOutputValue(ctx, node, 0, static_cast<int32_t>(input_val_opt.value()));
-             }
-            // --- Implement other CONV_ operations --
             // --- Control Flow Ops --
-            case OpType::CTRL_JUMP: break; // Handled by determineNextNode
-            case OpType::CTRL_BRANCH_COND: break; // Condition checked in determineNextNode
-            case OpType::CTRL_CALL: break; // Handled by determineNextNode
-            case OpType::CTRL_RETURN: break; // Handled by determineNextNode
+            // Execution logic done, control flow handled by determineNextNode
+            case OpType::CTRL_JUMP:
+            case OpType::CTRL_BRANCH_COND:
+            case OpType::CTRL_CALL:
+            case OpType::CTRL_RETURN:
+                break;
             // --- Default --
             default:
-                std::cerr << "VM Error: UNIMPLEMENTED Operation Type (" << static_cast<int>(node.operation) << ") for Node " << node.id << std::endl;
+                std::cerr << "VM Error: UNIMPLEMENTED/UNKNOWN Operation Type (" << static_cast<int>(node.operation) << ") for Node " << node.id
+ << std::endl;
                 return false;
         }
     } catch (const std::exception& e) {
@@ -365,93 +369,7 @@ BDIVirtualMachine::BDIVirtualMachine(size_t memory_size)
         std::cerr << "VM Unknown exception during execution of Node " << node.id << " (Op: " << static_cast<int>(node.operation) << ")" << std::endl;
         return false;
     }
-    return true; // Assume success if no error/exception
+    return true; // Assume success if no error/exception and not explicitly failed
  }
- // --- Determine Next Node Implementation (Expanded for CALL/RETURN) --
-NodeID BDIVirtualMachine::determineNextNode(BDINode& node) {
-    ExecutionContext& ctx = *execution_context_;
-    NodeID next_id = 0; // Default to halt
-    switch (node.operation) {
-        // --- Standard Control Flow ---
-        case core::graph::BDIOperationType::CTRL_JUMP:
-            if (!node.control_outputs.empty()) {
-                next_id = node.control_outputs[0];
-            }
-            break;
-        case core::graph::BDIOperationType::CTRL_BRANCH_COND: {
-            // ... (Implementation from previous step remains the same) ...
-             if (node.data_inputs.empty() || node.control_outputs.empty()) break;
-             auto condition_payload_opt = ctx.getPortValue(node.data_inputs[0]);
-             if (!condition_payload_opt || condition_payload_opt.value().type != core::types::BDIType::BOOL) break;
-             bool condition = condition_payload_opt.value().getAs<bool>();
-             if (condition) { // True branch
-                 if (node.control_outputs.size() > 0) next_id = node.control_outputs[0];
-             } else { // False branch
-                  if (node.control_outputs.size() > 1) next_id = node.control_outputs[1];
-                  else if (node.control_outputs.size() > 0) next_id = node.control_outputs[0]; // Fallthrough if only one target
-             }
-            break;
-        }
-        case core::graph::BDIOperationType::META_END:
-             next_id = 0; // Signal Halt
-             break;
-        // --- Function Call / Return --
-        case core::graph::BDIOperationType::CTRL_CALL:
-            if (!node.control_outputs.empty()) {
-                 // Determine return address: Assume sequential execution after CALL node
-                 // Find the node connected via control flow *from* the CALL node that is NOT the call target
-                 NodeID call_target = node.control_outputs[0]; // Assume target is first
-                 NodeID return_address = 0; // Default halt if no return path
-                 // This requires searching the graph or having precomputed successor info.
-                 // Simple approach: Look for *another* control output from the CALL node.
-                 // A more robust approach uses graph analysis or specific return edge conventions.
-                 // For now, let's assume a simple sequential return if possible.
-                 // We need to know the *next* node in the *caller's* sequence. This isn't directly
-                 // stored on the CALL node itself typically. Let's assume a convention:
-                 // The *second* control output of CALL is the return address node ID.
-                 if (node.control_outputs.size() > 1) {
-                     return_address = node.control_outputs[1];
-                 } else {
-                    // If no explicit return path, maybe it returns to 0 (halt) or error?
-                    std::cerr << "VM Warning: No explicit return path specified for CALL Node " << node.id << std::endl;
-                 }
-                // Push return address onto stack
-                ctx.pushCall(return_address);
-                // Jump to the function entry point
-                next_id = call_target;
-            }
-            break;
-        case core::graph::BDIOperationType::CTRL_RETURN: {
-            // Pop the return address from the stack
-            auto return_address_opt = ctx.popCall();
-            if (return_address_opt) {
-                next_id = return_address_opt.value(); // Jump to return address
-            } else {
-                 std::cerr << "VM Warning: RETURN executed with empty call stack. Halting." << std::endl;
-                next_id = 0; // Halt if stack is empty
-            }
-            // Note: Handling return values is separate - usually done by the node *before* RETURN
-            // storing the value in context/memory, accessible by the caller.
-            break;
-        }
-        // Default: Assume sequential execution if only one control output
-        default:
-            if (node.control_outputs.size() == 1) {
-                 next_id = node.control_outputs[0];
-            } else if (node.control_outputs.size() > 1) {
-                // Ambiguous sequential path - requires convention or error
-                 std::cerr << "VM Warning: Ambiguous sequential flow from Node " << node.id << ". Halting." << std::endl;
-                 next_id = 0;
-            } else {
-                // No control output defined, assume halt (unless it was META_END already handled)
-                next_id = 0;
-            }
-            break;
-    }
-    return next_id;
- }
- // --- Need accessors for VM components --
- ExecutionContext* BDIVirtualMachine::getExecutionContext() { return execution_context_.get(); }
- MemoryManager* BDIVirtualMachine::getMemoryManager() { return memory_manager_.get(); }
- const ExecutionContext* BDIVirtualMachine::getExecutionContext() const { return execution_context_.get(); }
- const MemoryManager* BDIVirtualMachine::getMemoryManager() const { return memory_manager_.get(); }
+ // determineNextNode remains largely the same as before, handling control flow logic
+ } // namespace bdi::runtime

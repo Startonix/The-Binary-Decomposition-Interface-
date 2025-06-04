@@ -37,6 +37,10 @@
     // TODO: Add methods for metadata, region assignment, etc.
     // Finalize and retrieve the built graph
     // Transfers ownership of the graph to the caller
+    // Set or update metadata for a specific node
+    bool setNodeMetadata(NodeID node_id, MetadataVariant metadata);
+    // Get metadata handle (optional)
+    std::optional<MetadataHandle> getNodeMetadataHandle(NodeID node_id);
     std::unique_ptr<BDIGraph> finalizeGraph();
     // Get a reference to the graph being built (use with caution regarding ownership)
     BDIGraph& getGraph();

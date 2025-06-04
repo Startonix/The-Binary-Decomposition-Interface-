@@ -1,11 +1,5 @@
 # The Binary Decomposition Interface
 
-  Metadata Integration
- // File: bdi/frontend/api/GraphBuilder.hpp (Updated)
- #ifndef BDI_FRONTEND_API_GRAPHBUILDER_HPP
- #define BDI_FRONTEND_API_GRAPHBUILDER_HPP
- Page 86
-
  BDI isn't just another IR or a compiler optimization stage. It's proposed as a foundational computational substrate, a universal fabric designed to
  represent any computation – from mathematical proofs to adaptive AI algorithms – in a verifiable, composable, and directly executable format grounded in
  binary semantics. It’s a radical rethinking of the interface between software and hardware, logic and execution.

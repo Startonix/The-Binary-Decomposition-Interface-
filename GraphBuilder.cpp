@@ -2,18 +2,58 @@
  #include "GraphBuilder.hpp"
  #include <stdexcept> // For std::runtime_error
  namespace bdi::frontend::api {
- GraphBuilder::GraphBuilder(const std::string& graph_name) {
+ // Constructor takes MetadataStore reference
+ GraphBuilder::GraphBuilder(MetadataStore& metadata_store, const std::string& graph_name)
+ : metadata_store_(metadata_store) { // Store reference
     graph_ = std::make_unique<BDIGraph>(graph_name);
     if (!graph_) {
         throw std::runtime_error("Failed to allocate BDIGraph in GraphBuilder constructor");
     }
  }
- NodeID GraphBuilder::addNode(BDIOperationType op, const std::string& debug_name) {
+ NodeID GraphBuilder::addNode(BDIOperationType op, const std::string& debug_name, std::optional<MetadataVariant> initial_metadata) {
     // TODO: Incorporate debug_name into metadata when MetadataStore is available
     if (!graph_) {
         throw std::runtime_error("GraphBuilder has no valid graph (perhaps after finalize?)");
     }
+     NodeID node_id = graph_->addNode(op);
+    BDINode* node = getNodeMutable(node_id);
+    if (node) {
+         // Add metadata if provided, otherwise default (monostate)
+         MetadataVariant meta_to_add = initial_metadata.value_or(std::monostate{});
+         // Add semantic tag if debug name provided
+         if (!debug_name.empty() && std::holds_alternative<std::monostate>(meta_to_add)) {
+             meta_to_add = SemanticTag{"", debug_name}; // Add name as description
+         } else if (!debug_name.empty() && std::holds_alternative<SemanticTag>(meta_to_add)) {
+             std::get<SemanticTag>(meta_to_add).description = debug_name; // Overwrite/set description
+         }
+         node->metadata_handle = metadata_store_.addMetadata(meta_to_add);
+    }
+    return node_id;
+ }
     return graph_->addNode(op);
+ }
+// Set/Update Metadata
+ bool GraphBuilder::setNodeMetadata(NodeID node_id, MetadataVariant metadata) {
+     BDINode* node = getNodeMutable(node_id);
+     if (node) {
+        // Check if node already has metadata assigned
+        if (node->metadata_handle != 0) {
+            // Update existing metadata entry
+            return metadata_store_.updateMetadata(node->metadata_handle, std::move(metadata));
+        } else {
+            // Add new metadata and assign handle
+            node->metadata_handle = metadata_store_.addMetadata(std::move(metadata));
+            return node->metadata_handle != 0;
+        }
+     }
+     return false;
+ }
+ std::optional<MetadataHandle> GraphBuilder::getNodeMetadataHandle(NodeID node_id) {
+     auto node_opt = graph_->getNode(node_id);
+     if (node_opt) {
+         return node_opt.value().get().metadata_handle;
+     }
+     return std::nullopt;
  }
  bool GraphBuilder::setNodePayload(NodeID node_id, TypedPayload payload) {
     BDINode* node = getNodeMutable(node_id);

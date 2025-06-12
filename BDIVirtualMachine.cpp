@@ -14,7 +14,7 @@
  #include <functional> // For std::function
  namespace bdi::runtime {
  // --- Type Conversion Helper --
-// Converts a value in a variant to the target C++ type, handling promotions/truncations.
+ // Converts a value in a variant to the target C++ type, handling promotions/truncations.
  // Returns std::nullopt on failure.
  template <typename TargetType>
  std::optional<TargetType> convertVariantTo(const BDIValueVariant& value_var) {
@@ -87,6 +87,37 @@ BDIVirtualMachine::BDIVirtualMachine(size_t memory_size)
     using BDIType = core::types::BDIType;
     using TypeSys = core::types::TypeSystem;
     ExecutionContext& ctx = *execution_context_;
+  case OpType::META_ASSERT: {
+                 if (node.data_inputs.size() != 1) return false;
+                 auto condition_opt = getInputValueTyped<bool>(ctx, node, 0);
+                 if (!condition_opt) {
+                      std::cerr << "VM Error: ASSERT Node " << node.id << " condition input missing or invalid." << std::endl;
+                     return false;
+                 }
+                 if (!condition_opt.value()) {
+                     // Assertion failed!
+                     std::cerr << "VM ASSERTION FAILED: Node " << node.id << "." << std::endl;
+                     // Retrieve associated semantic tag for more info?
+                      const MetadataVariant* meta = metadata_store_->getMetadata(node.metadata_handle); // Need access to MetadataStore
+                     if (meta && std::holds_alternative<SemanticTag>(*meta)) {
+                          std::cerr << "  Description: " << std::get<SemanticTag>(*meta).description << std::endl;
+                     }
+                     return false; // Halt execution on failed assertion
+                 }
+                 // Else: Assertion passed, continue
+                 break;
+            }
+            case OpType::META_VERIFY_PROOF: {
+                 std::cout << "  Op: VERIFY_PROOF (Stub) for Node " << node.id << std::endl;
+                 // STUB:
+                 // 1. Get metadata handle: node.metadata_handle
+                 // 2. Access MetadataStore: metadata_store_->getMetadata(handle)
+                 // 3. Check if variant holds a ProofTag
+                 // 4. If yes, get the hash/proof data
+                 // 5. Call external ProofVerifier (to be implemented)
+                 // 6. Return false if verification fails
+                 break;
+            }
     // --- Visitor Pattern for Binary Operations --
     // Define a visitor struct to handle operations based on promoted types
     struct BinaryOpVisitor {

@@ -74,10 +74,16 @@ bool setOutputValueVariant(ExecutionContext& ctx, const BDINode& node, PortIndex
      return true;
  }
  // --- BDIVirtualMachine Methods --
-BDIVirtualMachine::BDIVirtualMachine(size_t memory_size)
+BDIVirtualMachine::BDIVirtualMachine(MetadataStore& meta_store, size_t memory_size) // Added MetadataStore
     : current_node_id_(0),
+      metadata_store_(&meta_store), // Store reference
       memory_manager_(std::make_unique<MemoryManager>(memory_size)),
-      execution_context_(std::make_unique<ExecutionContext>()) { /* ... */ }
+      execution_context_(std::make_unique<ExecutionContext>())
+ {
+    if (!memory_manager_ || !execution_context_ || !metadata_store_) {
+        throw std::runtime_error("Failed to initialize VM components.");
+    }
+ }
  BDIVirtualMachine::~BDIVirtualMachine() = default;
  bool BDIVirtualMachine::execute(BDIGraph& graph, NodeID entry_node_id) { /* ... (no change needed) ... */ }
  bool BDIVirtualMachine::fetchDecodeExecuteCycle(BDIGraph& graph) { /* ... (no change needed) ... */ }
